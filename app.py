@@ -8,6 +8,7 @@ import streamlit.components.v1 as components
 from seating import assign_seats
 from gender_optimization import assign_gender_balanced, gender_counts, gender_imbalance
 from affiliation_optimization import assign_affiliation_balanced, affiliation_counts, affiliation_imbalance
+from combined_optimization import assign_combined_balanced
 from trainee_file import COMMUNICATION, COLUMNS, GENDERS, GRADES, export_trainees, import_trainees
 
 local_storage = components.declare_component("trainee_local_storage", path=str(Path(__file__).parent / "local_storage_component"))
@@ -102,19 +103,41 @@ if storage_event and storage_event.get("id") != st.session_state.get("last_stora
 
 signature = repr(records)
 
-random_button = st.button("ランダムに席替え", type="primary")
-balanced_button = st.button("性別を考慮して席替え")
-affiliation_button = st.button("所属を考慮して席替え")
-if random_button or balanced_button or affiliation_button:
+st.subheader("席替えの方法を選ぶ")
+st.caption("重みは『性別と所属を考慮して席替え』に適用します。0はその項目を考慮しません。")
+weight_columns = st.columns(2)
+with weight_columns[0]:
+    gender_weight = st.number_input("性別の重み", min_value=0, max_value=10, value=1, step=1)
+with weight_columns[1]:
+    affiliation_weight = st.number_input("所属の重み", min_value=0, max_value=10, value=1, step=1)
+st.caption("偏りの値の大きさは人数や企業数によって異なるため、同じ重みでも影響が同じとは限りません。")
+random_column, gender_column, affiliation_column, combined_column = st.columns(4)
+with random_column:
+    random_button = st.button("ランダムに席替え", type="primary", width="stretch")
+with gender_column:
+    balanced_button = st.button("性別を考慮して席替え", width="stretch")
+with affiliation_column:
+    affiliation_button = st.button("所属を考慮して席替え", width="stretch")
+with combined_column:
+    combined_button = st.button("性別と所属を考慮して席替え", width="stretch")
+if random_button or balanced_button or affiliation_button or combined_button:
     if not records:
         st.warning("研修生を1人以上入力してください。")
         st.session_state.pop("result", None)
     elif any(not str(person["名前"]).strip() for person in records):
         st.warning("すべての研修生の名前を入力してください。")
         st.session_state.pop("result", None)
+    elif combined_button and gender_weight == 0 and affiliation_weight == 0:
+        st.warning("性別と所属の重みは、少なくとも一方を1以上にしてください。")
     else:
         try:
-            if balanced_button:
+            result_weights = None
+            if combined_button:
+                groups, optimal = assign_combined_balanced(records, gender_weight, affiliation_weight)
+                st.session_state.result_method = "性別と所属を考慮した席替え"
+                st.session_state.result_status = "最適な配置を発見" if optimal else "条件を満たす配置を発見（最適かどうかは未確認）"
+                result_weights = (gender_weight, affiliation_weight)
+            elif balanced_button:
                 groups, optimal = assign_gender_balanced(records)
                 st.session_state.result_method = "性別を考慮した席替え"
                 st.session_state.result_status = "最適な配置を発見" if optimal else "条件を満たす配置を発見（最適かどうかは未確認）"
@@ -127,6 +150,7 @@ if random_button or balanced_button or affiliation_button:
                 st.session_state.result_method = "ランダムな席替え"
                 st.session_state.result_status = None
             st.session_state.result = groups
+            st.session_state.result_weights = result_weights
             st.session_state.result_signature = signature
         except RuntimeError as exc:
             st.session_state.pop("result", None)
@@ -144,6 +168,12 @@ if "result" in st.session_state:
             st.write(f"計算結果：{st.session_state.result_status}")
         st.write(f"性別の偏り：{gender_imbalance(groups)}")
         st.write(f"所属の偏り：{affiliation_imbalance(groups)}")
+        if st.session_state.get("result_weights") is not None:
+            result_gender_weight, result_affiliation_weight = st.session_state.result_weights
+            score = result_gender_weight * gender_imbalance(groups) + result_affiliation_weight * affiliation_imbalance(groups)
+            st.write(f"重み付き合計：{score}（性別 {result_gender_weight} × {gender_imbalance(groups)} ＋ 所属 {result_affiliation_weight} × {affiliation_imbalance(groups)}）")
+            if (gender_weight, affiliation_weight) != st.session_state.result_weights:
+                st.info("重みが変更されました。表示中の結果は実行時の重みです。再度ボタンを押すと新しい重みで計算します。")
         st.caption("偏りは小さいほど各グループが全体の比率に近い配置です。同じ研修生データの結果同士で比較できます。")
         with st.expander("偏りの計算方法"):
             st.markdown("各グループについて、`|全体人数 × グループの男性人数 − グループ人数 × 全体の男性人数|` と、女性についての同じ値を足し、全グループ分を合計します。その他・未入力などは男女の人数には含めず、全体人数とグループ人数には含めます。")

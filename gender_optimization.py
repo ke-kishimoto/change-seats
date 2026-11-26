@@ -24,14 +24,25 @@ def gender_imbalance(groups):
     )
 
 
+def add_gender_deviations(model, x, group_sizes, trainees):
+    """共通の割り当て変数に対する性別の偏りをモデルに追加する。"""
+    total = len(trainees)
+    deviations = []
+    for label, gender in (("male", "男性"), ("female", "女性")):
+        indices = [i for i, person in enumerate(trainees) if person.get("性別") == gender]
+        for g, size in enumerate(group_sizes):
+            deviation = model.new_int_var(0, total * size, f"{label}_deviation_{g}")
+            model.add_abs_equality(deviation, total * sum(x[i, g] for i in indices) - size * len(indices))
+            deviations.append(deviation)
+    return deviations
+
+
 def assign_gender_balanced(trainees):
     """グループを最適化し、各グループ内の席順をランダムにする。"""
     total = len(trainees)
     if not total:
         raise ValueError("研修生を1人以上入力してください。")
     group_sizes = [min(4, total - start) for start in range(0, total, 4)]
-    male_indices = [i for i, person in enumerate(trainees) if person.get("性別") == "男性"]
-    female_indices = [i for i, person in enumerate(trainees) if person.get("性別") == "女性"]
 
     model = cp_model.CpModel()
     x = {(i, g): model.new_bool_var(f"person_{i}_group_{g}")
@@ -39,15 +50,9 @@ def assign_gender_balanced(trainees):
     for i in range(total):
         model.add_exactly_one(x[i, g] for g in range(len(group_sizes)))
 
-    deviations = []
     for g, size in enumerate(group_sizes):
         model.add(sum(x[i, g] for i in range(total)) == size)
-        for label, indices in (("male", male_indices), ("female", female_indices)):
-            deviation = model.new_int_var(0, total * size, f"{label}_deviation_{g}")
-            model.add_abs_equality(
-                deviation, total * sum(x[i, g] for i in indices) - size * len(indices)
-            )
-            deviations.append(deviation)
+    deviations = add_gender_deviations(model, x, group_sizes, trainees)
     model.minimize(sum(deviations))
 
     solver = cp_model.CpSolver()

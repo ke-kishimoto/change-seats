@@ -35,33 +35,39 @@ def affiliation_imbalance(groups):
     )
 
 
-def assign_affiliation_balanced(trainees):
-    """所属の偏りが小さいグループを作り、グループ内の席を混ぜる。"""
+def add_affiliation_deviations(model, x, group_sizes, trainees):
+    """共通の割り当て変数に対する所属の偏りをモデルに追加する。"""
     total = len(trainees)
-    if not total:
-        raise ValueError("研修生を1人以上入力してください。")
-    group_sizes = [min(4, total - start) for start in range(0, total, 4)]
     company_indices = {}
     for index, person in enumerate(trainees):
         company = person.get("所属")
         if isinstance(company, str) and company.strip():
             company_indices.setdefault(company, []).append(index)
 
+    deviations = []
+    for g, size in enumerate(group_sizes):
+        for company_index, indices in enumerate(company_indices.values()):
+            deviation = model.new_int_var(0, total * size, f"company_{company_index}_deviation_{g}")
+            model.add_abs_equality(deviation, total * sum(x[i, g] for i in indices) - size * len(indices))
+            deviations.append(deviation)
+    return deviations
+
+
+def assign_affiliation_balanced(trainees):
+    """所属の偏りが小さいグループを作り、グループ内の席を混ぜる。"""
+    total = len(trainees)
+    if not total:
+        raise ValueError("研修生を1人以上入力してください。")
+    group_sizes = [min(4, total - start) for start in range(0, total, 4)]
     model = cp_model.CpModel()
     x = {(i, g): model.new_bool_var(f"person_{i}_group_{g}")
          for i in range(total) for g in range(len(group_sizes))}
     for i in range(total):
         model.add_exactly_one(x[i, g] for g in range(len(group_sizes)))
 
-    deviations = []
     for g, size in enumerate(group_sizes):
         model.add(sum(x[i, g] for i in range(total)) == size)
-        for company_index, indices in enumerate(company_indices.values()):
-            deviation = model.new_int_var(0, total * size, f"company_{company_index}_deviation_{g}")
-            model.add_abs_equality(
-                deviation, total * sum(x[i, g] for i in indices) - size * len(indices)
-            )
-            deviations.append(deviation)
+    deviations = add_affiliation_deviations(model, x, group_sizes, trainees)
     model.minimize(sum(deviations))
 
     solver = cp_model.CpSolver()
