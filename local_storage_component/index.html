@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; font: 14px sans-serif; color: #31333f; }
+    .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+    button { background: white; color: inherit; border: 1px solid #b8bbc2; border-radius: 6px; padding: 8px 13px; cursor: pointer; font: inherit; }
+    button:hover { border-color: #ff4b4b; color: #d43333; }
+    button:focus-visible { outline: 2px solid #ff4b4b; outline-offset: 2px; }
+    #message { margin: 8px 0 0; min-height: 20px; }
+  </style>
+</head>
+<body>
+  <div class="buttons">
+    <button id="save" type="button" disabled>ブラウザに保存</button>
+    <button id="load" type="button">ブラウザから読み込み</button>
+    <button id="clear" type="button">ブラウザの保存データをクリア</button>
+  </div>
+  <p id="message" role="status" aria-live="polite"></p>
+  <script>
+    const storageKey = "optimal-seat-trainees-v1";
+    let currentData = null;
+    const message = document.getElementById("message");
+    function send(type, details) {
+      window.parent.postMessage({isStreamlitMessage: true, type, ...details}, "*");
+    }
+    function status(text, error = false) {
+      message.textContent = text;
+      message.style.color = error ? "#b42318" : "#24703a";
+    }
+    window.addEventListener("message", event => {
+      if (event.source !== window.parent || event.data.type !== "streamlit:render") return;
+      currentData = event.data.args.data;
+      document.getElementById("save").disabled = typeof currentData !== "string";
+      send("streamlit:setFrameHeight", {height: document.body.scrollHeight});
+    });
+    document.getElementById("save").addEventListener("click", () => {
+      try {
+        localStorage.setItem(storageKey, currentData);
+        status("ブラウザに保存しました。入力内容を変更した場合は再度保存してください。");
+      } catch (_) { status("保存できませんでした。ブラウザのストレージ設定を確認してください。", true); }
+    });
+    document.getElementById("load").addEventListener("click", () => {
+      try {
+        const data = localStorage.getItem(storageKey);
+        if (data === null) { status("保存された研修生情報はありません。", true); return; }
+        send("streamlit:setComponentValue", {value: {id: Date.now().toString() + Math.random(), data}, dataType: "json"});
+        status("読み込み中です。");
+      } catch (_) { status("読み込めませんでした。ブラウザのストレージ設定を確認してください。", true); }
+    });
+    document.getElementById("clear").addEventListener("click", () => {
+      try {
+        localStorage.removeItem(storageKey);
+        status("ブラウザの保存データをクリアしました。画面の入力は残っています。");
+      } catch (_) { status("クリアできませんでした。ブラウザのストレージ設定を確認してください。", true); }
+    });
+    send("streamlit:componentReady", {apiVersion: 1});
+    send("streamlit:setFrameHeight", {height: document.body.scrollHeight});
+  </script>
+</body>
+</html>
