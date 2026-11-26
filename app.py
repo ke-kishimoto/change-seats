@@ -6,6 +6,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from seating import assign_seats
+from gender_optimization import assign_gender_balanced, gender_counts, gender_imbalance
+from affiliation_optimization import assign_affiliation_balanced, affiliation_counts, affiliation_imbalance
 from trainee_file import COMMUNICATION, COLUMNS, GENDERS, GRADES, export_trainees, import_trainees
 
 local_storage = components.declare_component("trainee_local_storage", path=str(Path(__file__).parent / "local_storage_component"))
@@ -34,7 +36,7 @@ def preserve_trainees():
 
 st.set_page_config(page_title="席替えアプリ", page_icon="🪑", layout="wide")
 st.title("🪑 席替えアプリ")
-st.write("研修生を入力して、ランダムに4人ずつのグループに分けます。")
+st.write("研修生を入力して、最大4人ずつのグループに分けます。")
 
 if "trainees" not in st.session_state:
     st.session_state.trainees = pd.DataFrame(
@@ -100,7 +102,10 @@ if storage_event and storage_event.get("id") != st.session_state.get("last_stora
 
 signature = repr(records)
 
-if st.button("ランダムに席替え", type="primary"):
+random_button = st.button("ランダムに席替え", type="primary")
+balanced_button = st.button("性別を考慮して席替え")
+affiliation_button = st.button("所属を考慮して席替え")
+if random_button or balanced_button or affiliation_button:
     if not records:
         st.warning("研修生を1人以上入力してください。")
         st.session_state.pop("result", None)
@@ -108,8 +113,24 @@ if st.button("ランダムに席替え", type="primary"):
         st.warning("すべての研修生の名前を入力してください。")
         st.session_state.pop("result", None)
     else:
-        st.session_state.result = assign_seats(records)
-        st.session_state.result_signature = signature
+        try:
+            if balanced_button:
+                groups, optimal = assign_gender_balanced(records)
+                st.session_state.result_method = "性別を考慮した席替え"
+                st.session_state.result_status = "最適な配置を発見" if optimal else "条件を満たす配置を発見（最適かどうかは未確認）"
+            elif affiliation_button:
+                groups, optimal = assign_affiliation_balanced(records)
+                st.session_state.result_method = "所属を考慮した席替え"
+                st.session_state.result_status = "最適な配置を発見" if optimal else "条件を満たす配置を発見（最適かどうかは未確認）"
+            else:
+                groups = assign_seats(records)
+                st.session_state.result_method = "ランダムな席替え"
+                st.session_state.result_status = None
+            st.session_state.result = groups
+            st.session_state.result_signature = signature
+        except RuntimeError as exc:
+            st.session_state.pop("result", None)
+            st.error(str(exc))
 
 if "result" in st.session_state:
     if signature != st.session_state.result_signature:
@@ -118,6 +139,15 @@ if "result" in st.session_state:
         st.subheader("席替え結果")
         st.write(f"研修生 {len(records)}人 / {len(st.session_state.result)}グループ")
         groups = st.session_state.result
+        st.write(f"実行方法：{st.session_state.get('result_method', 'ランダムな席替え')}")
+        if st.session_state.get("result_status"):
+            st.write(f"計算結果：{st.session_state.result_status}")
+        st.write(f"性別の偏り：{gender_imbalance(groups)}")
+        st.write(f"所属の偏り：{affiliation_imbalance(groups)}")
+        st.caption("偏りは小さいほど各グループが全体の比率に近い配置です。同じ研修生データの結果同士で比較できます。")
+        with st.expander("偏りの計算方法"):
+            st.markdown("各グループについて、`|全体人数 × グループの男性人数 − グループ人数 × 全体の男性人数|` と、女性についての同じ値を足し、全グループ分を合計します。その他・未入力などは男女の人数には含めず、全体人数とグループ人数には含めます。")
+            st.markdown("所属は各企業について、`|全体人数 × グループの企業人数 − グループ人数 × 全体の企業人数|` を計算し、全企業・全グループ分を合計します。所属未入力は企業として数えず、全体人数とグループ人数には含めます。")
         for start in range(0, len(groups), 2):
             if start:
                 st.html("<div style='height: 1.5rem' aria-hidden='true'></div>")
@@ -125,6 +155,13 @@ if "result" in st.session_state:
             for offset, group in enumerate(groups[start : start + 2]):
                 with group_columns[offset]:
                     st.markdown(f"**グループ {start + offset + 1}（{len(group)}人）**")
+                    male, female, other = gender_counts(group)
+                    st.caption(f"男性 {male}人 / 女性 {female}人 / その他・未入力など {other}人")
+                    company_counts, missing = affiliation_counts(group)
+                    company_summary = [f"{company} {count}人" for company, count in company_counts.items()]
+                    if missing:
+                        company_summary.append(f"未入力 {missing}人")
+                    st.caption("所属：" + " / ".join(company_summary))
                     for row in range(0, len(group), 2):
                         if row:
                             st.html("<div style='height: 0.75rem' aria-hidden='true'></div>")
@@ -135,10 +172,11 @@ if "result" in st.session_state:
                                 color = {"男性": "#e8f4fd", "女性": "#fdebed"}.get(gender, "#eeeeee")
                                 name = escape(str(person["名前"]))
                                 gender_label = escape(str(gender))
+                                affiliation = escape(str(person.get("所属") or "未入力"))
                                 st.markdown(
                                     f"<div style='background-color:{color}; color:#31333f; "
                                     "padding: 1rem; border-radius: 0.5rem; overflow-wrap: anywhere;'>"
                                     f"席 {row + seat_offset + 1}：{name}<br>"
-                                    f"<small>性別：{gender_label}</small></div>",
+                                    f"<small>性別：{gender_label}<br>所属：{affiliation}</small></div>",
                                     unsafe_allow_html=True,
                                 )
