@@ -9,6 +9,7 @@ from seating import assign_seats
 from gender_optimization import assign_gender_balanced, gender_counts, gender_imbalance
 from affiliation_optimization import assign_affiliation_balanced, affiliation_counts, affiliation_imbalance
 from combined_optimization import assign_combined_balanced
+from grade_optimization import assign_grade_balanced, grade_imbalance, high_grade_count
 from trainee_file import COMMUNICATION, COLUMNS, GENDERS, GRADES, export_trainees, import_trainees
 
 local_storage = components.declare_component("trainee_local_storage", path=str(Path(__file__).parent / "local_storage_component"))
@@ -78,7 +79,7 @@ _, count_column = st.columns([4, 1])
 with count_column:
     st.markdown(f"<div style='text-align: right'>合計：{len(edited)}人</div>", unsafe_allow_html=True)
 st.caption("合計は名前が未入力の行も含む、表の行数です。")
-st.caption("成績はA〜E（Aが最も良い）、コミュニケーションスキルは3段階です。現在は配置に使用しません。")
+st.caption("成績はA〜E（Aが最も良い）、コミュニケーションスキルは3段階です。")
 records = edited[COLUMNS].astype(object).where(pd.notna(edited[COLUMNS]), None).to_dict("records")
 for person in records:
     for column in ("名前", "所属", "性別"):
@@ -111,7 +112,7 @@ with weight_columns[0]:
 with weight_columns[1]:
     affiliation_weight = st.number_input("所属の重み", min_value=0, max_value=10, value=1, step=1)
 st.caption("偏りの値の大きさは人数や企業数によって異なるため、同じ重みでも影響が同じとは限りません。")
-random_column, gender_column, affiliation_column, combined_column = st.columns(4)
+random_column, gender_column, affiliation_column, combined_column, grade_column = st.columns(5)
 with random_column:
     random_button = st.button("ランダムに席替え", type="primary", width="stretch")
 with gender_column:
@@ -120,19 +121,27 @@ with affiliation_column:
     affiliation_button = st.button("所属を考慮して席替え", width="stretch")
 with combined_column:
     combined_button = st.button("性別と所属を考慮して席替え", width="stretch")
-if random_button or balanced_button or affiliation_button or combined_button:
+with grade_column:
+    grade_button = st.button("成績を考慮して席替え", width="stretch")
+if random_button or balanced_button or affiliation_button or combined_button or grade_button:
     if not records:
         st.warning("研修生を1人以上入力してください。")
         st.session_state.pop("result", None)
     elif any(not str(person["名前"]).strip() for person in records):
         st.warning("すべての研修生の名前を入力してください。")
         st.session_state.pop("result", None)
+    elif grade_button and any(person.get("成績") not in GRADES for person in records):
+        st.warning("成績を考慮するには、すべての研修生の成績を入力してください。")
     elif combined_button and gender_weight == 0 and affiliation_weight == 0:
         st.warning("性別と所属の重みは、少なくとも一方を1以上にしてください。")
     else:
         try:
             result_weights = None
-            if combined_button:
+            if grade_button:
+                groups, optimal = assign_grade_balanced(records)
+                st.session_state.result_method = "成績を考慮した席替え"
+                st.session_state.result_status = "最適な配置を発見" if optimal else "条件を満たす配置を発見（最適かどうかは未確認）"
+            elif combined_button:
                 groups, optimal = assign_combined_balanced(records, gender_weight, affiliation_weight)
                 st.session_state.result_method = "性別と所属を考慮した席替え"
                 st.session_state.result_status = "最適な配置を発見" if optimal else "条件を満たす配置を発見（最適かどうかは未確認）"
@@ -168,6 +177,10 @@ if "result" in st.session_state:
             st.write(f"計算結果：{st.session_state.result_status}")
         st.write(f"性別の偏り：{gender_imbalance(groups)}")
         st.write(f"所属の偏り：{affiliation_imbalance(groups)}")
+        if all(person.get("成績") in GRADES for group in groups for person in group):
+            st.write(f"成績（A・B）の偏り：{grade_imbalance(groups)}")
+        else:
+            st.caption("成績（A・B）の偏り：全員の成績が入力されると表示されます。")
         if st.session_state.get("result_weights") is not None:
             result_gender_weight, result_affiliation_weight = st.session_state.result_weights
             score = result_gender_weight * gender_imbalance(groups) + result_affiliation_weight * affiliation_imbalance(groups)
@@ -178,6 +191,7 @@ if "result" in st.session_state:
         with st.expander("偏りの計算方法"):
             st.markdown("各グループについて、`|全体人数 × グループの男性人数 − グループ人数 × 全体の男性人数|` と、女性についての同じ値を足し、全グループ分を合計します。その他・未入力などは男女の人数には含めず、全体人数とグループ人数には含めます。")
             st.markdown("所属は各企業について、`|全体人数 × グループの企業人数 − グループ人数 × 全体の企業人数|` を計算し、全企業・全グループ分を合計します。所属未入力は企業として数えず、全体人数とグループ人数には含めます。")
+            st.markdown("成績は `|全体人数 × グループのA・Bの人数 − グループ人数 × 全体のA・Bの人数|` を全グループ分合計します。成績が全員分必要です。")
         for start in range(0, len(groups), 2):
             if start:
                 st.html("<div style='height: 1.5rem' aria-hidden='true'></div>")
@@ -192,6 +206,11 @@ if "result" in st.session_state:
                     if missing:
                         company_summary.append(f"未入力 {missing}人")
                     st.caption("所属：" + " / ".join(company_summary))
+                    missing_grades = sum(person.get("成績") not in GRADES for person in group)
+                    grade_summary = f"成績A・B：{high_grade_count(group)}人"
+                    if missing_grades:
+                        grade_summary += f" / 成績未入力：{missing_grades}人"
+                    st.caption(grade_summary)
                     for row in range(0, len(group), 2):
                         if row:
                             st.html("<div style='height: 0.75rem' aria-hidden='true'></div>")
@@ -203,10 +222,11 @@ if "result" in st.session_state:
                                 name = escape(str(person["名前"]))
                                 gender_label = escape(str(gender))
                                 affiliation = escape(str(person.get("所属") or "未入力"))
+                                grade = escape(str(person.get("成績") or "未入力"))
                                 st.markdown(
                                     f"<div style='background-color:{color}; color:#31333f; "
                                     "padding: 1rem; border-radius: 0.5rem; overflow-wrap: anywhere;'>"
                                     f"席 {row + seat_offset + 1}：{name}<br>"
-                                    f"<small>性別：{gender_label}<br>所属：{affiliation}</small></div>",
+                                    f"<small>性別：{gender_label}<br>所属：{affiliation}<br>成績：{grade}</small></div>",
                                     unsafe_allow_html=True,
                                 )
